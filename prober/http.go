@@ -285,7 +285,13 @@ func ProbeHTTP(ctx context.Context, target string, module config.Module, registr
 		})
 	)
 
-	for _, lv := range []string{"resolve", "connect", "tls", "processing", "transfer"} {
+	// Check the option to send the url unresolved to the proxy
+	skipDNS := module.HTTP.UseProxyDNS && module.HTTP.HTTPClientConfig.ProxyURL.URL != nil
+
+	if !skipDNS {
+		durationGaugeVec.WithLabelValues("resolve")
+	}
+	for _, lv := range []string{"connect", "tls", "processing", "transfer"} {
 		durationGaugeVec.WithLabelValues(lv)
 	}
 
@@ -315,12 +321,17 @@ func ProbeHTTP(ctx context.Context, target string, module config.Module, registr
 		targetHost = targetURL.Host
 	}
 
-	ip, lookupTime, err := chooseProtocol(ctx, module.HTTP.IPProtocol, module.HTTP.IPProtocolFallback, targetHost, registry, logger)
-	if err != nil {
-		level.Error(logger).Log("msg", "Error resolving address", "err", err)
-		return false
+	// Resolve the host unless letting the proxy do the job.
+	var ip *net.IPAddr
+	if !skipDNS {
+		var lookupTime float64
+		ip, lookupTime, err = chooseProtocol(ctx, module.HTTP.IPProtocol, module.HTTP.IPProtocolFallback, targetHost, registry, logger)
+		if err != nil {
+			level.Error(logger).Log("msg", "Error resolving address", "err", err)
+			return false
+		}
+		durationGaugeVec.WithLabelValues("resolve").Add(lookupTime)
 	}
-	durationGaugeVec.WithLabelValues("resolve").Add(lookupTime)
 
 	httpClientConfig := module.HTTP.HTTPClientConfig
 	if len(httpClientConfig.TLSConfig.ServerName) == 0 {
@@ -367,18 +378,19 @@ func ProbeHTTP(ctx context.Context, target string, module config.Module, registr
 		httpConfig.Method = "GET"
 	}
 
-	// Replace the host field in the URL with the IP we resolved.
+	// Replace the host field in the URL with the IP we resolved unless letting a proxy server do the name resolution.
 	origHost := targetURL.Host
-	if targetPort == "" {
-		if strings.Contains(ip.String(), ":") {
-			targetURL.Host = "[" + ip.String() + "]"
+	if !skipDNS {
+		if targetPort == "" {
+			if strings.Contains(ip.String(), ":") {
+				targetURL.Host = "[" + ip.String() + "]"
+			} else {
+				targetURL.Host = ip.String()
+			}
 		} else {
-			targetURL.Host = ip.String()
+			targetURL.Host = net.JoinHostPort(ip.String(), targetPort)
 		}
-	} else {
-		targetURL.Host = net.JoinHostPort(ip.String(), targetPort)
 	}
-
 	var body io.Reader
 	var respBodyBytes int64
 
@@ -515,7 +527,7 @@ func ProbeHTTP(ctx context.Context, target string, module config.Module, registr
 			"end", trace.end,
 		)
 		// We get the duration for the first request from chooseProtocol.
-		if i != 0 {
+		if i != 0 && !skipDNS {
 			durationGaugeVec.WithLabelValues("resolve").Add(trace.dnsDone.Sub(trace.start).Seconds())
 		}
 		// Continue here if we never got a connection because a request failed.
