@@ -261,6 +261,11 @@ func ProbeHTTP(ctx context.Context, target string, module config.Module, registr
 			Help: "Returns earliest SSL cert expiry in unixtime",
 		})
 
+		probeSSLLastChainExpiryTimestampSeconds = prometheus.NewGauge(prometheus.GaugeOpts{
+			Name: "probe_ssl_last_chain_expiry_timestamp_seconds",
+			Help: "Returns last SSL chain expiry in timestamp seconds",
+		})
+
 		probeTLSVersion = prometheus.NewGaugeVec(
 			prometheus.GaugeOpts{
 				Name: "probe_tls_version_info",
@@ -315,11 +320,9 @@ func ProbeHTTP(ctx context.Context, target string, module config.Module, registr
 		level.Error(logger).Log("msg", "Could not parse target URL", "err", err)
 		return false
 	}
-	targetHost, targetPort, err := net.SplitHostPort(targetURL.Host)
-	// If split fails, assuming it's a hostname without port part.
-	if err != nil {
-		targetHost = targetURL.Host
-	}
+
+	targetHost := targetURL.Hostname()
+	targetPort := targetURL.Port()
 
 	// Resolve the host unless letting the proxy do the job.
 	var ip *net.IPAddr
@@ -558,9 +561,10 @@ func ProbeHTTP(ctx context.Context, target string, module config.Module, registr
 
 	if resp.TLS != nil {
 		isSSLGauge.Set(float64(1))
-		registry.MustRegister(probeSSLEarliestCertExpiryGauge, probeTLSVersion)
+		registry.MustRegister(probeSSLEarliestCertExpiryGauge, probeTLSVersion, probeSSLLastChainExpiryTimestampSeconds)
 		probeSSLEarliestCertExpiryGauge.Set(float64(getEarliestCertExpiry(resp.TLS).Unix()))
 		probeTLSVersion.WithLabelValues(getTLSVersion(resp.TLS)).Set(1)
+		probeSSLLastChainExpiryTimestampSeconds.Set(float64(getLastChainExpiry(resp.TLS).Unix()))
 		if httpConfig.FailIfSSL {
 			level.Error(logger).Log("msg", "Final request was over SSL")
 			success = false
