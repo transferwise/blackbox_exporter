@@ -497,6 +497,7 @@ func ProbeHTTP(ctx context.Context, target string, module config.Module, registr
 		if len(httpConfig.ValidHTTPVersions) != 0 {
 			found := false
 			for _, version := range httpConfig.ValidHTTPVersions {
+				level.Debug(logger).log("msg", "http versions", "version", version, "resp", resp.Proto)
 				if version == resp.Proto {
 					found = true
 					break
