@@ -16,6 +16,8 @@ package prober
 import (
 	"context"
 	"crypto/tls"
+	"crypto/x509"
+	"encoding/pem"
 	"fmt"
 	"io/ioutil"
 	"net/http"
@@ -74,8 +76,8 @@ func TestValidHTTPVersion(t *testing.T) {
 	}{
 		{[]string{}, true},
 		{[]string{"HTTP/1.1"}, true},
-		{[]string{"HTTP/1.1", "HTTP/2"}, true},
-		{[]string{"HTTP/2"}, false},
+		{[]string{"HTTP/1.1", "HTTP/2.0"}, true},
+		{[]string{"HTTP/2.0"}, false},
 	}
 	for i, test := range tests {
 		ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -597,7 +599,9 @@ func TestTLSConfigIsIgnoredForPlainHTTP(t *testing.T) {
 func TestHTTPUsesTargetAsTLSServerName(t *testing.T) {
 	// Create test certificates valid for 1 day.
 	certExpiry := time.Now().AddDate(0, 0, 1)
-	testcertPem, testKeyPem := generateTestCertificate(certExpiry, false)
+	testCertTmpl := generateCertificateTemplate(certExpiry, false)
+	testCertTmpl.IsCA = true
+	_, testcertPem, testKey := generateSelfSignedCertificate(testCertTmpl)
 
 	// CAFile must be passed via filesystem, use a tempfile.
 	tmpCaFile, err := ioutil.TempFile("", "cafile.pem")
@@ -612,6 +616,7 @@ func TestHTTPUsesTargetAsTLSServerName(t *testing.T) {
 	}
 	defer os.Remove(tmpCaFile.Name())
 
+	testKeyPem := pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(testKey)})
 	testcert, err := tls.X509KeyPair(testcertPem, testKeyPem)
 	if err != nil {
 		panic(fmt.Sprintf("Failed to decode TLS testing keypair: %s\n", err))
@@ -697,42 +702,19 @@ func TestHTTPPhases(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	found := false
-	foundLabel := map[string]bool{
-		"connect":    false,
-		"processing": false,
-		"resolve":    false,
-		"transfer":   false,
-		"tls":        false,
+	expectedMetrics := map[string]map[string]map[string]struct{}{
+		"probe_http_duration_seconds": {
+			"phase": {
+				"connect":    {},
+				"processing": {},
+				"resolve":    {},
+				"transfer":   {},
+				"tls":        {},
+			},
+		},
 	}
-	for _, mf := range mfs {
-		if mf.GetName() == "probe_http_duration_seconds" {
-			found = true
-			for _, metric := range mf.GetMetric() {
-				for _, lp := range metric.Label {
-					if lp.GetName() == "phase" {
-						f, ok := foundLabel[lp.GetValue()]
-						if !ok {
-							t.Fatalf("Unexpected label phase=%s", lp.GetValue())
-						}
-						if f {
-							t.Fatalf("Label phase=%s duplicated", lp.GetValue())
-						}
-						foundLabel[lp.GetValue()] = true
-					}
-				}
-			}
 
-		}
-	}
-	if !found {
-		t.Fatal("probe_http_duration_seconds not found")
-	}
-	for lv, found := range foundLabel {
-		if !found {
-			t.Fatalf("Label phase=%s not found", lv)
-		}
-	}
+	checkMetrics(expectedMetrics, mfs, t)
 }
 
 func TestCookieJar(t *testing.T) {
